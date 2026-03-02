@@ -1,0 +1,193 @@
+@import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&family=Luckiest+Guy&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Baloo 2', 'Trebuchet MS', ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  --ink: #1d154a;
+  --ink-soft: #564f7f;
+  --paper: #fff5cf;
+  --paper-2: #ffefb0;
+  --sky: #92d9ff;
+  --mint: #8fffbc;
+  --pink: #ff88c8;
+  --orange: #ffb347;
+  --purple: #805dff;
+  --line: #241a5c;
+  --shadow: 0 10px 0 #241a5c;
+  --sea-ink: var(--ink);
+  --sea-ink-soft: var(--ink-soft);
+  --chip-line: var(--line);
+  --chip-bg: #fff8df;
+  --link-bg-hover: #fff2bc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 14% 16%, rgba(255, 255, 255, 0.7), transparent 28%),
+    radial-gradient(circle at 88% 19%, rgba(255, 245, 173, 0.85), transparent 24%),
+    radial-gradient(circle at 18% 84%, rgba(255, 139, 206, 0.42), transparent 25%),
+    radial-gradient(circle at 84% 76%, rgba(143, 255, 188, 0.46), transparent 24%),
+    linear-gradient(180deg, var(--sky) 0%, #89b8ff 42%, #a7a4ff 100%);
+  background-attachment: fixed;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle, rgba(255, 255, 255, 0.42) 2px, transparent 2px),
+    radial-gradient(circle, rgba(255, 255, 255, 0.28) 1px, transparent 1px);
+  background-size:
+    22px 22px,
+    14px 14px;
+  background-position:
+    0 0,
+    7px 9px;
+  opacity: 0.32;
+  z-index: -1;
+}
+
+a {
+  color: var(--purple);
+}
+
+.page-wrap {
+  width: min(1180px, calc(100% - 1.2rem));
+  margin-inline: auto;
+}
+
+.display-title {
+  font-family: 'Luckiest Guy', 'Baloo 2', cursive;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  text-shadow: 0 3px 0 rgba(255, 255, 255, 0.56);
+}
+
+.hero-subtitle {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem;
+  font-family: 'Luckiest Guy', 'Baloo 2', cursive;
+  font-size: clamp(1.1rem, 2.1vw, 1.6rem);
+  line-height: 1;
+  letter-spacing: 0.015em;
+}
+
+.hero-subtitle-word {
+  display: inline-block;
+  text-shadow: 0 2px 0 rgba(255, 255, 255, 0.62);
+}
+
+.hero-subtitle-word-bad {
+  color: #ea4a96;
+  transform: rotate(-2deg);
+}
+
+.hero-subtitle-word-art {
+  color: #f08e2c;
+  transform: rotate(1deg);
+}
+
+.hero-subtitle-word-great {
+  color: #16a866;
+  transform: rotate(-1deg);
+}
+
+.hero-subtitle-word-vibes {
+  color: #5a51c9;
+  transform: rotate(2deg);
+}
+
+.island-kicker {
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: var(--ink-soft);
+}
+
+.island-shell {
+  border: 3px solid var(--line);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 12% 10%, rgba(255, 255, 255, 0.75), transparent 32%),
+    linear-gradient(165deg, var(--paper), var(--paper-2));
+  box-shadow: var(--shadow);
+  transition: transform 160ms ease;
+}
+
+.island-shell:hover {
+  transform: translateY(-2px);
+}
+
+button,
+input,
+select {
+  font: inherit;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+button {
+  cursor: pointer;
+  border-radius: 12px;
+  border: 2px solid var(--line);
+  box-shadow: 0 4px 0 var(--line);
+  transform: translateY(0);
+  transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
+  white-space: nowrap;
+  line-height: 1.1;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0 var(--line);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow: 0 2px 0 var(--line);
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+input,
+select {
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+}
+
+input:focus,
+select:focus {
+  outline: 3px solid rgba(128, 93, 255, 0.32);
+  outline-offset: 1px;
+}
+
+@media (max-width: 820px) {
+  .display-title {
+    line-height: 1.03;
+  }
+}

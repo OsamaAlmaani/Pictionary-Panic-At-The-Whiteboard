@@ -1,0 +1,24 @@
+{
+  "projectName": "pictionary",
+  "mode": "file-router",
+  "typescript": true,
+  "packageManager": "pnpm",
+  "includeExamples": false,
+  "tailwind": true,
+  "addOnOptions": {},
+  "envVarValues": {
+    "CONVEX_DEPLOYMENT": "little-mosquito-185",
+    "VITE_CONVEX_URL": "https://little-mosquito-185.convex.cloud",
+    "VITE_CLERK_PUBLISHABLE_KEY": "pk_test_aW50ZW50LWdvYmxpbi02Mi5jbGVyay5hY2NvdW50cy5kZXYk"
+  },
+  "git": true,
+  "routerOnly": false,
+  "version": 1,
+  "framework": "react",
+  "chosenAddOns": [
+    "biome",
+    "railway",
+    "convex",
+    "clerk"
+  ]
+}
