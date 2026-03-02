@@ -27,6 +27,7 @@ type Category = (typeof CATEGORIES)[number]
 type WordMode = 'single' | 'multiple' | 'random_all'
 type DifficultyMode = 'mixed' | 'easy' | 'medium' | 'difficult' | 'hard'
 const PLAYER_PRESENCE_HEARTBEAT_MS = 8_000
+const NEXT_GAME_START_WINDOW_MS = 10 * 60 * 1000
 
 type ConfigDraft = {
   wordsPerTeamLimit: number
@@ -208,7 +209,8 @@ function RoomPage() {
   const currentRound = joinedView?.currentRound ?? null
   const remainingMs = currentRound ? Math.max(0, currentRound.endsAtMs - nowMs) : 0
   const isAdmin = !!joinedView?.me.isAdmin
-  const isRoomFinished = joinedView?.room.state === 'FINISHED'
+  const isRoomFinished =
+    joinedView?.room.state === 'FINISHED' || joinedView?.room.state === 'CANCELED'
   const canEditConfig =
     isAdmin &&
     (joinedView?.room.state === 'LOBBY' || joinedView?.room.state === 'CONFIGURED')
@@ -492,12 +494,20 @@ function RoomPage() {
   }, [joinedView])
 
   const finalMessage =
-    joinedView?.room.state === 'FINISHED' ? joinedView.room.lastEvent?.message ?? null : null
+    joinedView?.room.state === 'FINISHED' || joinedView?.room.state === 'CANCELED'
+      ? joinedView.room.lastEvent?.message ?? null
+      : null
   const canStartNewGame = useMemo(() => {
     if (!joinedView || joinedView.room.state !== 'FINISHED' || !isAdmin) {
       return false
     }
     if (joinedView.room.nextRoomCode) {
+      return false
+    }
+    if (
+      !joinedView.room.finishedAtMs ||
+      Date.now() - joinedView.room.finishedAtMs > NEXT_GAME_START_WINDOW_MS
+    ) {
       return false
     }
 
@@ -584,7 +594,10 @@ function RoomPage() {
     const roomSessionStarted =
       roomView.roomState === 'IN_PROGRESS' ||
       roomView.roomState === 'BETWEEN_ROUNDS' ||
-      roomView.roomState === 'FINISHED'
+      roomView.roomState === 'FINISHED' ||
+      roomView.roomState === 'CANCELED'
+    const roomSessionClosed =
+      roomView.roomState === 'FINISHED' || roomView.roomState === 'CANCELED'
 
     if (roomSessionStarted) {
       return (
@@ -593,7 +606,10 @@ function RoomPage() {
             <p className="island-kicker mb-2">Game Locked</p>
             <h1 className="display-title m-0 text-4xl sm:text-5xl">Game {roomCode}</h1>
             <p className="mt-3 text-sm font-semibold text-[var(--sea-ink-soft)]">
-              This match already started and you are not on the player list. Ask the admin for the latest game code before the markers dry out.
+              {roomSessionClosed
+                ? 'This game session is closed and you are not on the player list.'
+                : 'This match already started and you are not on the player list.'}{' '}
+              Ask the admin for the latest game code before the markers dry out.
             </p>
             <button
               type="button"
@@ -1167,11 +1183,15 @@ function RoomPage() {
         </section>
       )}
 
-      {view.room.state === 'FINISHED' && (
+      {(view.room.state === 'FINISHED' || view.room.state === 'CANCELED') && (
         <section className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_1fr]">
           <article className="island-shell rounded-2xl p-6">
-            <p className="island-kicker mb-1">Game Finished</p>
-            <h2 className="m-0 text-4xl font-extrabold">Final Leaderboard</h2>
+            <p className="island-kicker mb-1">
+              {view.room.state === 'CANCELED' ? 'Game Canceled' : 'Game Finished'}
+            </p>
+            <h2 className="m-0 text-4xl font-extrabold">
+              {view.room.state === 'CANCELED' ? 'Session Closed' : 'Final Leaderboard'}
+            </h2>
             {finalMessage ? (
               <div className="mt-3 rounded-2xl border-[3px] border-[var(--line)] bg-[rgba(255,136,200,0.35)] p-3">
                 <p className="m-0 text-sm font-extrabold text-[var(--line)]">
@@ -1179,9 +1199,15 @@ function RoomPage() {
                 </p>
               </div>
             ) : null}
-            <p className="mt-2 text-sm text-[var(--sea-ink-soft)]">
-              Teams ranked by score with player breakdown.
-            </p>
+            {view.room.state === 'CANCELED' ? (
+              <p className="mt-2 text-sm text-[var(--sea-ink-soft)]">
+                This game was canceled before kickoff.
+              </p>
+            ) : (
+              <p className="mt-2 text-sm text-[var(--sea-ink-soft)]">
+                Teams ranked by score with player breakdown.
+              </p>
+            )}
 
             {canStartNewGame ? (
               <button

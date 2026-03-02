@@ -16,6 +16,57 @@ function normalizeRoomCode(value: string) {
   return value.trim().toUpperCase()
 }
 
+function titleCase(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+function gameStateLabel(value: string) {
+  return value
+    .toLowerCase()
+    .split('_')
+    .map((part) => titleCase(part))
+    .join(' ')
+}
+
+function gameResultLabel(value: string | null) {
+  switch (value) {
+    case 'WON':
+      return 'Won'
+    case 'LOST':
+      return 'Lost'
+    case 'DRAW':
+      return 'Draw'
+    case 'NO_TEAM':
+      return 'No Team'
+    default:
+      return 'Ongoing'
+  }
+}
+
+function gameResultClasses(value: string | null) {
+  switch (value) {
+    case 'WON':
+      return 'bg-[var(--mint)]'
+    case 'LOST':
+      return 'bg-[rgba(255,136,200,0.45)]'
+    case 'DRAW':
+      return 'bg-[var(--orange)]'
+    case 'NO_TEAM':
+      return 'bg-white/80'
+    default:
+      return 'bg-[var(--paper)]'
+  }
+}
+
+function formatDateTime(timestamp: number) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(timestamp)
+}
+
 function errorMessage(error: unknown) {
   const raw = error instanceof Error ? error.message : String(error)
   const cleaned = raw
@@ -44,6 +95,10 @@ function HomePage() {
   const createRoom = useMutation(api.game.createRoom)
   const joinRoom = useMutation(api.game.joinRoom)
   const myProfile = useQuery(api.game.getMyProfile, isSignedIn ? {} : 'skip')
+  const myGameHistory = useQuery(
+    api.game.getMyGameHistory,
+    isSignedIn ? { limit: 12 } : 'skip',
+  )
 
   useEffect(() => {
     if (!isSignedIn || !user) {
@@ -233,6 +288,90 @@ function HomePage() {
             />
           </label>
 
+        </article>
+      </section>
+
+      <section className="mt-4">
+        <article className="island-shell rounded-2xl p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="m-0 text-lg font-semibold">Your Game History</h2>
+            {isSignedIn && myGameHistory ? (
+              <p className="m-0 text-xs font-semibold uppercase tracking-wide text-[var(--sea-ink-soft)]">
+                {myGameHistory.length} sessions
+              </p>
+            ) : null}
+          </div>
+
+          {!isSignedIn ? (
+            <p className="mt-3 text-sm text-[var(--sea-ink-soft)]">
+              Sign in to see your played games.
+            </p>
+          ) : myGameHistory === undefined ? (
+            <p className="mt-3 text-sm text-[var(--sea-ink-soft)]">Loading history...</p>
+          ) : myGameHistory.length === 0 ? (
+            <p className="mt-3 text-sm text-[var(--sea-ink-soft)]">
+              No games yet. Start one and make a masterpiece disaster.
+            </p>
+          ) : (
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              {myGameHistory.map((session) => (
+                <article
+                  key={session.roomId}
+                  className="rounded-2xl border-2 border-[var(--line)] bg-white/70 p-3"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="m-0 text-xs font-extrabold uppercase tracking-[0.08em] text-[var(--sea-ink-soft)]">
+                        Game {session.roomCode}
+                      </p>
+                      <p className="m-0 text-sm font-semibold">
+                        {session.isAdmin ? 'Admin' : 'Player'}
+                        {session.myTeamName ? ` • ${session.myTeamName}` : ''}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-end gap-1">
+                      <span className="rounded-full border-2 border-[var(--line)] bg-[var(--paper)] px-2 py-0.5 text-xs font-bold">
+                        {gameStateLabel(session.state)}
+                      </span>
+                      {session.result ? (
+                        <span
+                          className={`rounded-full border-2 border-[var(--line)] px-2 py-0.5 text-xs font-bold ${gameResultClasses(session.result)}`}
+                        >
+                          {gameResultLabel(session.result)}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <p className="mt-2 text-xs text-[var(--sea-ink-soft)]">
+                    {session.finishedAtMs
+                      ? `Ended ${formatDateTime(session.finishedAtMs)}`
+                      : session.startedAtMs
+                        ? `Started ${formatDateTime(session.startedAtMs)}`
+                        : `Created ${formatDateTime(session.createdAtMs)}`}
+                  </p>
+
+                  <div className="mt-3 flex items-center justify-between gap-3">
+                    <p className="m-0 text-xs font-semibold text-[var(--sea-ink-soft)]">
+                      Score {session.myScore} • Rounds {session.roundCount}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigate({
+                          to: '/room/$code',
+                          params: { code: session.roomCode },
+                        })
+                      }}
+                      className="rounded-xl border border-[var(--line)] bg-[var(--mint)] px-3 py-1.5 text-xs font-extrabold"
+                    >
+                      Open Game
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
         </article>
       </section>
 

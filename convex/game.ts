@@ -16,10 +16,20 @@ import {
   type WordCategory,
 } from './gameEngine'
 
-const GAME_STATES = ['LOBBY', 'CONFIGURED', 'IN_PROGRESS', 'BETWEEN_ROUNDS', 'FINISHED'] as const
+const GAME_STATES = [
+  'LOBBY',
+  'CONFIGURED',
+  'IN_PROGRESS',
+  'BETWEEN_ROUNDS',
+  'FINISHED',
+  'CANCELED',
+] as const
 const WORD_MODES = ['single', 'multiple', 'random_all'] as const
 const DIFFICULTY_MODES = ['mixed', 'easy', 'medium', 'difficult', 'hard'] as const
 const PLAYER_PRESENCE_TIMEOUT_MS = 25_000
+const NEXT_ROOM_START_WINDOW_MS = 10 * 60 * 1000
+const DEFAULT_GAME_HISTORY_LIMIT = 12
+const MAX_GAME_HISTORY_LIMIT = 30
 
 const wordCategoryValidator = v.union(
   v.literal('easy'),
@@ -520,9 +530,10 @@ export const joinRoom = mutation({
     if (
       room.state === 'IN_PROGRESS' ||
       room.state === 'BETWEEN_ROUNDS' ||
-      room.state === 'FINISHED'
+      room.state === 'FINISHED' ||
+      room.state === 'CANCELED'
     ) {
-      throw new Error('This room session already started and you are not part of it')
+      throw new Error('This game session is closed and you are not part of it')
     }
 
     const resolvedDisplayName = await resolveDisplayName({
@@ -570,6 +581,140 @@ export const getMyProfile = query({
     return {
       preferredDisplayName: profile?.preferredDisplayName ?? null,
     }
+  },
+})
+
+export const getMyGameHistory = query({
+  args: {
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await requireIdentity(ctx)
+    const requestedLimit = Math.floor(args.limit ?? DEFAULT_GAME_HISTORY_LIMIT)
+    const limit = Math.min(
+      MAX_GAME_HISTORY_LIMIT,
+      Math.max(
+        1,
+        Number.isFinite(requestedLimit)
+          ? requestedLimit
+          : DEFAULT_GAME_HISTORY_LIMIT,
+      ),
+    )
+
+    const playerRows = await ctx.db
+      .query('players')
+      .withIndex('by_token', (q) => q.eq('tokenIdentifier', identity.tokenIdentifier))
+      .collect()
+    if (playerRows.length < 1) {
+      return []
+    }
+
+    const latestPlayerByRoomId = new Map<Id<'rooms'>, Doc<'players'>>()
+    const sortedPlayers = [...playerRows].sort((a, b) => {
+      if (a.joinedAtMs !== b.joinedAtMs) {
+        return b.joinedAtMs - a.joinedAtMs
+      }
+      return b._id.localeCompare(a._id)
+    })
+    for (const player of sortedPlayers) {
+      if (latestPlayerByRoomId.has(player.roomId)) {
+        continue
+      }
+      latestPlayerByRoomId.set(player.roomId, player)
+    }
+
+    const roomEntries = (
+      await Promise.all(
+        [...latestPlayerByRoomId.values()].map(async (player) => {
+          const room = await ctx.db.get(player.roomId)
+          if (!room) {
+            return null
+          }
+          return { player, room }
+        }),
+      )
+    )
+      .filter((entry): entry is { player: Doc<'players'>; room: Doc<'rooms'> } => !!entry)
+      .filter(
+        ({ room }) =>
+          !!room.startedAtMs ||
+          room.state === 'IN_PROGRESS' ||
+          room.state === 'BETWEEN_ROUNDS' ||
+          room.state === 'FINISHED' ||
+          room.state === 'CANCELED' ||
+          room.roundNumber > 0,
+      )
+      .sort((a, b) => b.room.createdAtMs - a.room.createdAtMs)
+      .slice(0, limit)
+
+    return await Promise.all(
+      roomEntries.map(async ({ player, room }) => {
+        const teams = await ctx.db
+          .query('teams')
+          .withIndex('by_room', (q) => q.eq('roomId', room._id))
+          .collect()
+        const rankedTeams = [...teams].sort((a, b) => {
+          if (a.score !== b.score) {
+            return b.score - a.score
+          }
+          if (a.roundsPlayed !== b.roundsPlayed) {
+            return a.roundsPlayed - b.roundsPlayed
+          }
+          return a.position - b.position
+        })
+        const myTeam = player.teamId
+          ? teams.find((team) => team._id === player.teamId) ?? null
+          : null
+        const myTeamRank = myTeam
+          ? rankedTeams.findIndex((team) => team._id === myTeam._id) + 1
+          : null
+        const topScore =
+          teams.length > 0
+            ? teams.reduce(
+                (maxScore, team) => Math.max(maxScore, team.score),
+                Number.NEGATIVE_INFINITY,
+              )
+            : null
+        const topTeamCount =
+          topScore === null
+            ? 0
+            : teams.filter((team) => team.score === topScore).length
+
+        const result =
+          room.state === 'CANCELED'
+            ? null
+            : room.state !== 'FINISHED'
+              ? 'ONGOING'
+              : !myTeam || topScore === null
+                ? 'NO_TEAM'
+                : myTeam.score === topScore
+                  ? topTeamCount > 1
+                    ? 'DRAW'
+                    : 'WON'
+                  : 'LOST'
+
+        return {
+          roomId: room._id,
+          roomCode: room.code,
+          state: room.state,
+          createdAtMs: room.createdAtMs,
+          startedAtMs: room.startedAtMs ?? null,
+          finishedAtMs: room.finishedAtMs ?? null,
+          isAdmin: player.isAdmin,
+          myScore: player.score,
+          myTeamName: myTeam?.name ?? null,
+          myTeamRank,
+          teamCount: teams.length,
+          roundCount: room.roundNumber,
+          wordsUsedCount: room.wordCursor,
+          result,
+          endMessage:
+            room.state === 'FINISHED' || room.state === 'CANCELED'
+              ? room.lastEvent?.message ?? null
+              : null,
+        }
+      }),
+    )
   },
 })
 
@@ -1080,7 +1225,7 @@ export const leaveRoom = mutation({
       const now = Date.now()
       const shouldTerminate = !!args.terminateIfAdmin
 
-      if (shouldTerminate && room.state !== 'FINISHED') {
+      if (shouldTerminate && room.state !== 'FINISHED' && room.state !== 'CANCELED') {
         const activeRound = room.activeRoundId ? await ctx.db.get(room.activeRoundId) : null
         if (activeRound && activeRound.status === 'ACTIVE') {
           await ctx.db.patch(activeRound._id, {
@@ -1092,13 +1237,17 @@ export const leaveRoom = mutation({
           })
         }
 
-        const message = `Your beloved admin ${me.displayName} terminated the game.`
+        const neverStarted =
+          room.state === 'LOBBY' || (room.state === 'CONFIGURED' && !room.startedAtMs)
+        const message = neverStarted
+          ? `Game canceled by ${me.displayName} before the first marker touched the board.`
+          : `Your beloved admin ${me.displayName} terminated the game.`
         await ctx.db.patch(room._id, {
-          state: 'FINISHED',
+          state: neverStarted ? 'CANCELED' : 'FINISHED',
           activeRoundId: undefined,
           finishedAtMs: now,
           lastEvent: {
-            type: 'GAME_TERMINATED',
+            type: neverStarted ? 'GAME_CANCELED' : 'GAME_TERMINATED',
             atMs: now,
             actorName: me.displayName,
             message,
@@ -1109,17 +1258,24 @@ export const leaveRoom = mutation({
       await ctx.db.patch(me._id, { lastSeenAtMs: now - PLAYER_PRESENCE_TIMEOUT_MS - 1 })
       return { success: true, terminated: shouldTerminate }
     }
-    await ctx.db.delete(me._id)
-
     const latestRoom = await ctx.db.get(room._id)
-    if (!latestRoom || latestRoom.state === 'FINISHED') {
+    if (!latestRoom) {
       return { success: true }
     }
+    const now = Date.now()
+    if (latestRoom.state === 'FINISHED' || latestRoom.state === 'CANCELED') {
+      // Preserve finished-session participants so past games remain re-openable and
+      // visible in player history.
+      await ctx.db.patch(me._id, { lastSeenAtMs: now - PLAYER_PRESENCE_TIMEOUT_MS - 1 })
+      return { success: true }
+    }
+
+    await ctx.db.delete(me._id)
+
     if (latestRoom.state === 'LOBBY' || latestRoom.state === 'CONFIGURED') {
       return { success: true }
     }
 
-    const now = Date.now()
     const [remainingPlayers, teams] = await Promise.all([
       ctx.db
         .query('players')
@@ -1200,6 +1356,11 @@ export const startNextRoomSession = mutation({
     }
     assertAdmin(me)
 
+    const now = Date.now()
+    if (!room.finishedAtMs || now - room.finishedAtMs > NEXT_ROOM_START_WINDOW_MS) {
+      throw new Error('This game ended a while ago. Start a fresh game from home.')
+    }
+
     if (room.nextRoomCode) {
       const existingNextRoom = await getRoomByCode(ctx, room.nextRoomCode)
       if (existingNextRoom) {
@@ -1213,7 +1374,6 @@ export const startNextRoomSession = mutation({
     }
 
     const { players, teams } = await loadRoomContext(ctx, room._id)
-    const now = Date.now()
     const nextRoomCode = await generateUniqueRoomCode(ctx)
     const wordSeed = generateWordSeed(nextRoomCode, now)
     const wordDeck = buildWordDeck(room.config, wordSeed)

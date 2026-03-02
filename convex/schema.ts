@@ -7,6 +7,7 @@ const gameState = v.union(
   v.literal('IN_PROGRESS'),
   v.literal('BETWEEN_ROUNDS'),
   v.literal('FINISHED'),
+  v.literal('CANCELED'),
 )
 
 const wordMode = v.union(
@@ -40,6 +41,7 @@ const roomEventType = v.union(
   v.literal('SCORE_ADJUSTED'),
   v.literal('GAME_STARTED'),
   v.literal('GAME_FINISHED'),
+  v.literal('GAME_CANCELED'),
   v.literal('GAME_TERMINATED'),
 )
 
