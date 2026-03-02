@@ -80,6 +80,14 @@ a {
   text-shadow: 0 3px 0 rgba(255, 255, 255, 0.56);
 }
 
+.hero-title {
+  font-size: clamp(2.2rem, 8.6vw, 4.4rem);
+  line-height: 0.96;
+  overflow-wrap: normal;
+  word-break: keep-all;
+  hyphens: none;
+}
+
 .hero-subtitle {
   margin: 0;
   display: flex;

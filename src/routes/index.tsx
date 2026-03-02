@@ -191,9 +191,9 @@ function HomePage() {
 		<main className="page-wrap px-4 pb-16 pt-10">
 			<section className="island-shell rounded-3xl p-6 sm:p-8">
 				<p className="island-kicker mb-2">Pictionary</p>
-				<h1 className="display-title m-0 text-5xl leading-tight sm:text-6xl">
-					Panic At The Whiteboard
-				</h1>
+        <h1 className="display-title hero-title m-0">
+          Panic At The Whiteboard
+        </h1>
 				<p className="hero-subtitle mt-2">
 					<span className="hero-subtitle-word hero-subtitle-word-bad">Bad</span>
 					<span className="hero-subtitle-word hero-subtitle-word-art">Art</span>
