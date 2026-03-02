@@ -116,7 +116,7 @@ function HomePage() {
 
     const code = normalizeRoomCode(roomCodeInput)
     if (!code) {
-      setError('Enter a room code')
+      setError('Enter a game code')
       return
     }
 
@@ -207,7 +207,7 @@ function HomePage() {
               }}
               className="rounded-xl border border-[var(--line)] bg-[var(--mint)] px-4 py-3 text-sm font-extrabold"
             >
-              Create Room
+              Create Game
             </button>
 
             <button
@@ -218,12 +218,12 @@ function HomePage() {
               }}
               className="rounded-xl border border-[var(--line)] bg-[var(--orange)] px-4 py-3 text-sm font-extrabold"
             >
-              Join Room
+              Join Game
             </button>
           </div>
 
           <label className="mt-4 block text-sm font-semibold">
-            Room code (for join)
+            Game code (for join)
             <input
               value={roomCodeInput}
               onChange={(event) => setRoomCodeInput(normalizeRoomCode(event.target.value))}

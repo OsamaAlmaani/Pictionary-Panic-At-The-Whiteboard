@@ -375,6 +375,20 @@ function generateRoomCode() {
   return result
 }
 
+async function generateUniqueRoomCode(ctx: Ctx) {
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const code = generateRoomCode()
+    const existing = await ctx.db
+      .query('rooms')
+      .withIndex('by_code', (q) => q.eq('code', code))
+      .unique()
+    if (!existing) {
+      return code
+    }
+  }
+  throw new Error('Failed to generate a unique room code')
+}
+
 export const createRoom = mutation({
   args: {
     displayName: v.optional(v.string()),
@@ -394,21 +408,7 @@ export const createRoom = mutation({
     })
     const now = Date.now()
 
-    let code: string | null = null
-    for (let attempt = 0; attempt < 24; attempt += 1) {
-      const nextCode = generateRoomCode()
-      const existing = await ctx.db
-        .query('rooms')
-        .withIndex('by_code', (q) => q.eq('code', nextCode))
-        .unique()
-      if (!existing) {
-        code = nextCode
-        break
-      }
-    }
-    if (!code) {
-      throw new Error('Failed to generate a unique room code')
-    }
+    const code = await generateUniqueRoomCode(ctx)
 
     const config = defaultConfig()
     const wordSeed = generateWordSeed(code, now)
@@ -430,6 +430,7 @@ export const createRoom = mutation({
       turnCursor: 0,
       roundNumber: 0,
       activeRoundId: undefined,
+      nextRoomCode: undefined,
       lastEvent: undefined,
     })
 
@@ -487,6 +488,43 @@ export const joinRoom = mutation({
       throw new Error('Room not found')
     }
 
+    const existingPlayer = await getRoomPlayerByToken({
+      ctx,
+      roomId: room._id,
+      tokenIdentifier: identity.tokenIdentifier,
+    })
+    if (existingPlayer) {
+      const resolvedDisplayName =
+        args.displayName?.trim() ||
+        existingPlayer.displayName ||
+        defaultDisplayName({
+          identity,
+          fallback: `Player-${identity.subject.slice(0, 5)}`,
+        })
+      await upsertPreferredDisplayName({
+        ctx,
+        identity,
+        displayName: resolvedDisplayName,
+      })
+      await ctx.db.patch(existingPlayer._id, {
+        lastSeenAtMs: Date.now(),
+        displayName: resolvedDisplayName,
+      })
+      return {
+        roomCode: room.code,
+        roomId: room._id,
+        playerId: existingPlayer._id,
+      }
+    }
+
+    if (
+      room.state === 'IN_PROGRESS' ||
+      room.state === 'BETWEEN_ROUNDS' ||
+      room.state === 'FINISHED'
+    ) {
+      throw new Error('This room session already started and you are not part of it')
+    }
+
     const resolvedDisplayName = await resolveDisplayName({
       ctx,
       identity,
@@ -498,23 +536,6 @@ export const joinRoom = mutation({
       identity,
       displayName: resolvedDisplayName,
     })
-
-    const existingPlayer = await getRoomPlayerByToken({
-      ctx,
-      roomId: room._id,
-      tokenIdentifier: identity.tokenIdentifier,
-    })
-    if (existingPlayer) {
-      await ctx.db.patch(existingPlayer._id, {
-        lastSeenAtMs: Date.now(),
-        displayName: resolvedDisplayName,
-      })
-      return {
-        roomCode: room.code,
-        roomId: room._id,
-        playerId: existingPlayer._id,
-      }
-    }
 
     const now = Date.now()
     const playerId = await ctx.db.insert('players', {
@@ -1157,7 +1178,7 @@ export const leaveRoom = mutation({
   },
 })
 
-export const restartGame = mutation({
+export const startNextRoomSession = mutation({
   args: {
     code: v.string(),
   },
@@ -1179,95 +1200,104 @@ export const restartGame = mutation({
     }
     assertAdmin(me)
 
+    if (room.nextRoomCode) {
+      const existingNextRoom = await getRoomByCode(ctx, room.nextRoomCode)
+      if (existingNextRoom) {
+        return {
+          success: true,
+          roomCode: existingNextRoom.code,
+          roomId: existingNextRoom._id,
+          reused: true,
+        }
+      }
+    }
+
     const { players, teams } = await loadRoomContext(ctx, room._id)
     const now = Date.now()
-    const eligiblePlayers = players.filter(
-      (player) => !!player.teamId && isPlayerOnline(player, now),
-    )
-
-    if (eligiblePlayers.length < 2) {
-      throw new Error('At least two connected assigned players are required to start')
-    }
-
-    const playersPerTeam = new Map<Id<'teams'>, number>(teams.map((team) => [team._id, 0]))
-    for (const player of eligiblePlayers) {
-      if (!player.teamId) {
-        continue
-      }
-      const current = playersPerTeam.get(player.teamId)
-      if (current === undefined) {
-        continue
-      }
-      playersPerTeam.set(player.teamId, current + 1)
-    }
-    const emptyTeams = teams.filter(
-      (team) => (playersPerTeam.get(team._id) ?? 0) === 0,
-    )
-    if (emptyTeams.length > 0) {
-      throw new Error(
-        'Every team must have at least one connected player. Remove empty teams or reconnect players.',
-      )
-    }
-
-    const activeTeamIds = new Set(
-      eligiblePlayers
-        .map((player) => player.teamId)
-        .filter((teamId): teamId is Id<'teams'> => !!teamId),
-    )
-    if (activeTeamIds.size < 2) {
-      throw new Error('Players must be distributed across at least two teams')
-    }
-
-    const wordSeed = generateWordSeed(room.code, now)
+    const nextRoomCode = await generateUniqueRoomCode(ctx)
+    const wordSeed = generateWordSeed(nextRoomCode, now)
     const wordDeck = buildWordDeck(room.config, wordSeed)
     if (wordDeck.length < 1) {
       throw new Error('Word pool is empty. Configure the room first')
     }
 
-    const turnOrder = buildDeterministicTurnOrder(eligiblePlayers)
-    const [rounds, usedWords] = await Promise.all([
-      ctx.db
-        .query('rounds')
-        .withIndex('by_room', (q) => q.eq('roomId', room._id))
-        .collect(),
-      ctx.db
-        .query('usedWords')
-        .withIndex('by_room', (q) => q.eq('roomId', room._id))
-        .collect(),
-    ])
-
-    await Promise.all([
-      ...players.map((player) => ctx.db.patch(player._id, { score: 0 })),
-      ...teams.map((team) =>
-        ctx.db.patch(team._id, {
-          score: 0,
-          roundsPlayed: 0,
-        }),
-      ),
-      ...rounds.map((round) => ctx.db.delete(round._id)),
-      ...usedWords.map((usedWord) => ctx.db.delete(usedWord._id)),
-    ])
-
-    await ctx.db.patch(room._id, {
-      state: 'BETWEEN_ROUNDS',
-      startedAtMs: now,
+    const nextRoomId = await ctx.db.insert('rooms', {
+      code: nextRoomCode,
+      adminTokenIdentifier: room.adminTokenIdentifier,
+      adminPlayerId: undefined,
+      state: 'CONFIGURED',
+      createdAtMs: now,
+      startedAtMs: undefined,
       finishedAtMs: undefined,
-      turnOrder,
-      turnCursor: 0,
-      roundNumber: 0,
-      activeRoundId: undefined,
+      config: room.config,
       wordSeed,
       wordDeck,
       wordCursor: 0,
-      lastEvent: {
-        type: 'GAME_STARTED',
-        atMs: now,
-      },
+      turnOrder: [],
+      turnCursor: 0,
+      roundNumber: 0,
+      activeRoundId: undefined,
+      nextRoomCode: undefined,
+      lastEvent: undefined,
     })
+
+    const teamIdMap = new Map<Id<'teams'>, Id<'teams'>>()
+    const sortedTeams = [...teams].sort((a, b) => a.position - b.position)
+    for (const team of sortedTeams) {
+      const nextTeamId = await ctx.db.insert('teams', {
+        roomId: nextRoomId,
+        name: team.name,
+        color: team.color,
+        position: team.position,
+        score: 0,
+        roundsPlayed: 0,
+        createdAtMs: now,
+      })
+      teamIdMap.set(team._id, nextTeamId)
+    }
+
+    const sortedPlayers = [...players].sort((a, b) => {
+      if (a.joinedAtMs !== b.joinedAtMs) {
+        return a.joinedAtMs - b.joinedAtMs
+      }
+      return a._id.localeCompare(b._id)
+    })
+    let nextAdminPlayerId: Id<'players'> | null = null
+    for (const [index, player] of sortedPlayers.entries()) {
+      const nextPlayerId = await ctx.db.insert('players', {
+        roomId: nextRoomId,
+        tokenIdentifier: player.tokenIdentifier,
+        subject: player.subject,
+        displayName: player.displayName,
+        imageUrl: player.imageUrl,
+        isAdmin: player.isAdmin,
+        joinedAtMs: now + index,
+        lastSeenAtMs: player.lastSeenAtMs ?? now,
+        teamId: player.teamId ? teamIdMap.get(player.teamId) : undefined,
+        score: 0,
+      })
+      if (player.isAdmin) {
+        nextAdminPlayerId = nextPlayerId
+      }
+    }
+
+    if (!nextAdminPlayerId) {
+      throw new Error('Failed to create next room admin player')
+    }
+
+    await Promise.all([
+      ctx.db.patch(nextRoomId, {
+        adminPlayerId: nextAdminPlayerId,
+      }),
+      ctx.db.patch(room._id, {
+        nextRoomCode,
+      }),
+    ])
 
     return {
       success: true,
-      gameKey: wordSeed,
+      roomCode: nextRoomCode,
+      roomId: nextRoomId,
     }
   },
 })
@@ -1383,6 +1413,7 @@ export const getRoomView = query({
         status: 'NOT_JOINED' as const,
         roomCode: room.code,
         roomState: room.state,
+        nextRoomCode: room.nextRoomCode ?? null,
       }
     }
 
@@ -1527,6 +1558,7 @@ export const getRoomView = query({
         wordPoolSize: room.wordDeck.length,
         usedWordsCount: room.wordCursor,
         remainingWordsCount: Math.max(0, room.wordDeck.length - room.wordCursor),
+        nextRoomCode: room.nextRoomCode ?? null,
         config: room.config,
         lastEvent: room.lastEvent ?? null,
       },

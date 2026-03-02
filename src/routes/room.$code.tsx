@@ -168,7 +168,7 @@ function RoomPage() {
   const createTeam = useMutation(api.game.createTeam)
   const updateTeam = useMutation(api.game.updateTeam)
   const removeTeam = useMutation(api.game.removeTeam)
-  const restartGame = useMutation(api.game.restartGame)
+  const startNextRoomSession = useMutation(api.game.startNextRoomSession)
   const heartbeat = useMutation(api.game.heartbeat)
   const leaveRoom = useMutation(api.game.leaveRoom)
 
@@ -239,6 +239,26 @@ function RoomPage() {
       playTimeoutSound()
     }
   }, [joinedView?.room.lastEvent])
+
+  useEffect(() => {
+    if (!joinedView?.room.nextRoomCode || joinedView.room.state !== 'FINISHED') {
+      return
+    }
+    if (joinedView.room.nextRoomCode === joinedView.room.code) {
+      return
+    }
+    void navigate({
+      to: '/room/$code',
+      params: {
+        code: joinedView.room.nextRoomCode,
+      },
+    })
+  }, [
+    joinedView?.room.code,
+    joinedView?.room.nextRoomCode,
+    joinedView?.room.state,
+    navigate,
+  ])
 
   useEffect(() => {
     if (!joinedView || joinedView.room.state !== 'IN_PROGRESS' || !currentRound) {
@@ -438,7 +458,7 @@ function RoomPage() {
       return null
     }
     if (joinedView.room.state !== 'CONFIGURED') {
-      return 'Save room configuration first.'
+      return 'Save game configuration first.'
     }
     if (joinedView.teams.length < 2) {
       return 'At least two teams are required.'
@@ -477,6 +497,9 @@ function RoomPage() {
     if (!joinedView || joinedView.room.state !== 'FINISHED' || !isAdmin) {
       return false
     }
+    if (joinedView.room.nextRoomCode) {
+      return false
+    }
 
     const teamsWithOnlinePlayers = joinedView.teams.filter(
       (team) => team.onlinePlayerCount > 0,
@@ -500,9 +523,9 @@ function RoomPage() {
     return (
       <main className="page-wrap px-4 pb-16 pt-10">
         <section className="island-shell rounded-3xl p-6 sm:p-8">
-          <h1 className="display-title m-0 text-4xl sm:text-5xl">Room {roomCode}</h1>
+          <h1 className="display-title m-0 text-4xl sm:text-5xl">Game {roomCode}</h1>
           <p className="mt-3 text-sm text-[var(--sea-ink-soft)]">
-            Sign in to access this room.
+            Sign in to access this game.
           </p>
           <div className="mt-4 flex gap-2">
             <SignInButton mode="modal">
@@ -529,7 +552,7 @@ function RoomPage() {
     return (
       <main className="page-wrap px-4 pb-16 pt-10">
         <section className="island-shell rounded-3xl p-6 sm:p-8">
-          <p className="text-sm font-semibold">Loading room...</p>
+          <p className="text-sm font-semibold">Loading game...</p>
         </section>
       </main>
     )
@@ -539,9 +562,9 @@ function RoomPage() {
     return (
       <main className="page-wrap px-4 pb-16 pt-10">
         <section className="island-shell rounded-3xl p-6 sm:p-8">
-          <h1 className="display-title m-0 text-4xl sm:text-5xl">Room Not Found</h1>
+          <h1 className="display-title m-0 text-4xl sm:text-5xl">Game Not Found</h1>
           <p className="mt-3 text-sm text-[var(--sea-ink-soft)]">
-            Room code <strong>{roomCode}</strong> does not exist.
+            Game code <strong>{roomCode}</strong> does not exist.
           </p>
           <button
             type="button"
@@ -558,13 +581,41 @@ function RoomPage() {
   }
 
   if (roomView.status === 'NOT_JOINED') {
+    const roomSessionStarted =
+      roomView.roomState === 'IN_PROGRESS' ||
+      roomView.roomState === 'BETWEEN_ROUNDS' ||
+      roomView.roomState === 'FINISHED'
+
+    if (roomSessionStarted) {
+      return (
+        <main className="page-wrap px-4 pb-16 pt-10">
+          <section className="island-shell rounded-3xl p-6 sm:p-8">
+            <p className="island-kicker mb-2">Game Locked</p>
+            <h1 className="display-title m-0 text-4xl sm:text-5xl">Game {roomCode}</h1>
+            <p className="mt-3 text-sm font-semibold text-[var(--sea-ink-soft)]">
+              This match already started and you are not on the player list. Ask the admin for the latest game code before the markers dry out.
+            </p>
+            <button
+              type="button"
+              className="mt-4 bg-[var(--orange)] px-4 py-2 text-sm font-extrabold"
+              onClick={() => {
+                void navigate({ to: '/' })
+              }}
+            >
+              Back Home
+            </button>
+          </section>
+        </main>
+      )
+    }
+
     return (
       <main className="page-wrap px-4 pb-16 pt-10">
         <section className="island-shell rounded-3xl p-6 sm:p-8">
-          <p className="island-kicker mb-2">Join Room</p>
-          <h1 className="display-title m-0 text-4xl sm:text-5xl">Room {roomCode}</h1>
+          <p className="island-kicker mb-2">Join Game</p>
+          <h1 className="display-title m-0 text-4xl sm:text-5xl">Game {roomCode}</h1>
           <p className="mt-3 text-sm text-[var(--sea-ink-soft)]">
-            You are signed in but not joined to this room yet.
+            You are signed in but not joined to this game yet.
           </p>
 
           <label className="mt-4 block text-sm font-semibold">
@@ -589,7 +640,7 @@ function RoomPage() {
                 void handleJoinNotJoined()
               }}
             >
-              Join Room
+              Join Game
             </button>
             <button
               type="button"
@@ -617,7 +668,7 @@ function RoomPage() {
     return (
       <main className="page-wrap px-4 pb-16 pt-10">
         <section className="island-shell rounded-3xl p-6 sm:p-8">
-          <p className="text-sm font-semibold">Loading room...</p>
+          <p className="text-sm font-semibold">Loading game...</p>
         </section>
       </main>
     )
@@ -627,7 +678,7 @@ function RoomPage() {
     <main className="page-wrap px-4 pb-16 pt-10">
       <section className="island-shell rounded-3xl p-4 sm:p-6">
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="display-title m-0 text-3xl sm:text-4xl">Room {view.room.code}</h1>
+          <h1 className="display-title m-0 text-3xl sm:text-4xl">Game {view.room.code}</h1>
           <span className="rounded-full border-[3px] border-[var(--line)] bg-white px-3 py-1 text-xs font-extrabold">
             {gameStateLabel(view.room.state)}
           </span>
@@ -645,7 +696,7 @@ function RoomPage() {
               className="bg-[var(--orange)] px-3 py-1.5 text-sm font-extrabold"
               onClick={() => handleLeaveAction('leave')}
             >
-              Leave Room
+              Leave Game
             </button>
           </div>
         </div>
@@ -661,7 +712,7 @@ function RoomPage() {
         <section className="mt-4 grid gap-4 xl:grid-cols-[1.2fr_1fr]">
           <article className="island-shell rounded-2xl p-5">
             <p className="island-kicker mb-1">Setup</p>
-            <h2 className="m-0 text-2xl font-bold">Room Configuration</h2>
+            <h2 className="m-0 text-2xl font-bold">Game Configuration</h2>
             <p className="mt-2 text-sm text-[var(--sea-ink-soft)]">
               Configure words and teams before the game starts.
             </p>
@@ -1138,8 +1189,14 @@ function RoomPage() {
                 disabled={isBusy}
                 className="mt-3 bg-[var(--mint)] px-4 py-2 text-sm font-extrabold disabled:opacity-60"
                 onClick={() => {
-                  void runAction('restart-game', async () => {
-                    await restartGame({ code: view.room.code })
+                  void runAction('start-next-room-session', async () => {
+                    const next = await startNextRoomSession({ code: view.room.code })
+                    await navigate({
+                      to: '/room/$code',
+                      params: {
+                        code: next.roomCode,
+                      },
+                    })
                   })
                 }}
               >
@@ -1211,7 +1268,7 @@ function RoomPage() {
               <div>
                 <p className="island-kicker mb-1">Confirm Exit</p>
                 <h3 className="m-0 text-2xl font-extrabold">
-                  {isAdmin ? 'Leave Room And End Game?' : 'Leave Room?'}
+                  {isAdmin ? 'Leave Game And End Game?' : 'Leave Game?'}
                 </h3>
               </div>
               <div className="rounded-2xl border-[3px] border-[var(--line)] bg-white px-3 py-2 text-xl font-extrabold leading-none">
@@ -1221,7 +1278,7 @@ function RoomPage() {
 
             <p className="mt-3 text-sm font-semibold text-[var(--sea-ink-soft)]">
               {isAdmin
-                ? 'If you continue, the game will be terminated for everyone in this room.'
+                ? 'If you continue, the game will be terminated for everyone in this game.'
                 : 'If you leave now, your team loses its artist and chaos energy.'}
             </p>
 
@@ -1232,7 +1289,7 @@ function RoomPage() {
                 className="bg-white px-4 py-2 text-sm font-extrabold"
                 onClick={() => setLeaveIntent(null)}
               >
-                Stay In Room
+                Stay In Game
               </button>
               <button
                 type="button"
@@ -1252,7 +1309,7 @@ function RoomPage() {
                       : 'Leave + Logout'
                     : isAdmin
                       ? 'Terminate Game'
-                      : 'Leave Room'}
+                      : 'Leave Game'}
               </button>
             </div>
           </article>

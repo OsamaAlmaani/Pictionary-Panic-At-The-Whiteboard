@@ -81,6 +81,7 @@ export default defineSchema({
     turnCursor: v.number(),
     roundNumber: v.number(),
     activeRoundId: v.optional(v.id('rounds')),
+    nextRoomCode: v.optional(v.string()),
     lastEvent: v.optional(
       v.object({
         type: roomEventType,
