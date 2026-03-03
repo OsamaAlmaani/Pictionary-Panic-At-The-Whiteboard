@@ -832,45 +832,47 @@ function RoomPage() {
   return (
     <main className="page-wrap px-4 pb-16 pt-10">
       <section className="island-shell rounded-3xl p-4 sm:p-6">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-            <h1 className="display-title m-0 translate-y-[2px] text-3xl leading-none sm:text-4xl">
-              Game {view.room.code}
-            </h1>
-            <button
-              type="button"
-              className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-xl border-[3px] border-[var(--line)] bg-white px-3 text-sm font-extrabold leading-none text-[var(--line)]"
-              onClick={() => {
-                void handleShareGame()
-              }}
-              title={supportsNativeShare ? 'Share game' : 'Copy game link'}
-              aria-label={supportsNativeShare ? 'Share game' : 'Copy game link'}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                className="h-4 w-4"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="flex min-w-0 flex-col gap-2 sm:flex-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <h1 className="display-title m-0 shrink-0 whitespace-nowrap text-[clamp(2.05rem,9vw,2.45rem)] leading-none sm:text-4xl">
+                Game {view.room.code}
+              </h1>
+              <button
+                type="button"
+                className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-xl border-[3px] border-[var(--line)] bg-white px-3 text-sm font-extrabold leading-none text-[var(--line)]"
+                onClick={() => {
+                  void handleShareGame()
+                }}
+                title={supportsNativeShare ? 'Share game' : 'Copy game link'}
+                aria-label={supportsNativeShare ? 'Share game' : 'Copy game link'}
               >
-                <rect x="9" y="9" width="11" height="11" rx="2" />
-                <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" />
-              </svg>
-              <span>{supportsNativeShare ? 'Share' : 'Copy'}</span>
-            </button>
-            {view.room.state !== 'LOBBY' ? (
-              <span className="rounded-full border-[3px] border-[var(--line)] bg-white px-3 py-1 text-xs font-extrabold">
-                {gameStateLabel(view.room.state)}
-              </span>
-            ) : null}
+                <svg
+                  viewBox="0 0 24 24"
+                  className="h-4 w-4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="9" y="9" width="11" height="11" rx="2" />
+                  <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" />
+                </svg>
+                <span>{supportsNativeShare ? 'Share' : 'Copy'}</span>
+              </button>
+              {view.room.state !== 'LOBBY' ? (
+                <span className="rounded-full border-[3px] border-[var(--line)] bg-white px-3 py-1 text-xs font-extrabold">
+                  {gameStateLabel(view.room.state)}
+                </span>
+              ) : null}
+            </div>
             {shareStatus ? (
               <span className="text-xs font-extrabold text-[var(--sea-ink-soft)]">{shareStatus}</span>
             ) : null}
           </div>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
             <UserButton />
             <button
               type="button"
