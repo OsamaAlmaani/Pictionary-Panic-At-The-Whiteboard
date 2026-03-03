@@ -7,9 +7,11 @@ import {
 } from '@clerk/clerk-react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
+import { OnlineWhiteboard } from '../components/online-whiteboard'
+import type { Editor } from 'tldraw'
 
 export const Route = createFileRoute('/room/$code')({ component: RoomPage })
 
@@ -26,6 +28,7 @@ const CATEGORIES = [
 type Category = (typeof CATEGORIES)[number]
 type WordMode = 'single' | 'multiple' | 'random_all'
 type DifficultyMode = 'mixed' | 'easy' | 'medium' | 'difficult' | 'hard'
+type DrawingMode = 'physical' | 'online'
 const PLAYER_PRESENCE_HEARTBEAT_MS = 8_000
 const NEXT_GAME_START_WINDOW_MS = 10 * 60 * 1000
 
@@ -35,6 +38,7 @@ type ConfigDraft = {
   wordMode: WordMode
   selectedCategories: Category[]
   difficultyMode: DifficultyMode
+  drawingMode: DrawingMode
 }
 
 function normalizeRoomCode(value: string) {
@@ -59,6 +63,8 @@ function errorMessage(error: unknown) {
     .replace(/\[CONVEX[^\]]*\]\s*/g, '')
     .replace(/\[Request ID:[^\]]*\]\s*/g, '')
     .replace(/Server Error\s*/g, '')
+    .replace(/\s+at handler\s*\([^)]*\)\s*Called by client/gi, '')
+    .replace(/\s+Called by client/gi, '')
   const marker = 'Uncaught Error:'
   const index = cleaned.indexOf(marker)
   if (index >= 0) {
@@ -127,6 +133,7 @@ function defaultConfig(): ConfigDraft {
     wordMode: 'random_all',
     selectedCategories: [...CATEGORIES],
     difficultyMode: 'mixed',
+    drawingMode: 'physical',
   }
 }
 
@@ -142,14 +149,22 @@ function RoomPage() {
   const [displayName, setDisplayName] = useState('')
   const [displayNameDirty, setDisplayNameDirty] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [shareStatus, setShareStatus] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [newTeamName, setNewTeamName] = useState('')
   const [configDraft, setConfigDraft] = useState<ConfigDraft>(defaultConfig)
   const [nowMs, setNowMs] = useState(Date.now())
   const [leaveIntent, setLeaveIntent] = useState<'leave' | 'logout' | null>(null)
   const [leaveBusy, setLeaveBusy] = useState(false)
+  const [historyDrawingPreview, setHistoryDrawingPreview] = useState<{
+    word: string
+    playerName: string
+    teamName: string
+    url: string
+  } | null>(null)
   const timeoutGuardRef = useRef<string | null>(null)
   const lastEventRef = useRef<string | null>(null)
+  const whiteboardEditorRef = useRef<Editor | null>(null)
 
   const roomView = useQuery(
     api.game.getRoomView,
@@ -165,6 +180,7 @@ function RoomPage() {
   const startRound = useMutation(api.game.startRound)
   const markRoundGuessed = useMutation(api.game.markRoundGuessed)
   const timeoutRound = useMutation(api.game.timeoutRound)
+  const generateRoundDrawingUploadUrl = useMutation(api.game.generateRoundDrawingUploadUrl)
   const assignPlayerTeam = useMutation(api.game.assignPlayerTeam)
   const createTeam = useMutation(api.game.createTeam)
   const updateTeam = useMutation(api.game.updateTeam)
@@ -203,6 +219,7 @@ function RoomPage() {
       wordMode: roomConfig.wordMode,
       selectedCategories: roomConfig.selectedCategories,
       difficultyMode: roomConfig.difficultyMode,
+      drawingMode: roomConfig.drawingMode ?? 'physical',
     })
   }, [roomConfigKey])
 
@@ -274,8 +291,8 @@ function RoomPage() {
       return
     }
     timeoutGuardRef.current = currentRound.id
-    void timeoutRound({ code: joinedView.room.code }).catch(() => {})
-  }, [joinedView, currentRound, remainingMs, timeoutRound])
+    void resolveRoundWithSnapshot('TIMEOUT').catch(() => {})
+  }, [joinedView, currentRound, remainingMs])
 
   useEffect(() => {
     if (!joinedRoomCode) {
@@ -326,6 +343,67 @@ function RoomPage() {
     } finally {
       setBusy(null)
     }
+  }
+
+  const handleWhiteboardEditorMount = useCallback((editor: Editor | null) => {
+    whiteboardEditorRef.current = editor
+  }, [])
+
+  async function uploadRoundSnapshotIfNeeded() {
+    if (!joinedView || joinedView.room.config.drawingMode !== 'online') {
+      return undefined
+    }
+    if (!joinedView.me.isAdmin) {
+      return undefined
+    }
+    const activeEditor = whiteboardEditorRef.current
+    const activeRound = joinedView.currentRound
+    if (!activeEditor || !activeRound) {
+      return undefined
+    }
+
+    const shapeIds = [...activeEditor.getCurrentPageShapeIds()]
+    if (shapeIds.length < 1) {
+      return undefined
+    }
+
+    const image = await activeEditor.toImage(shapeIds, {
+      format: 'png',
+      background: true,
+      padding: 24,
+      scale: 1,
+    })
+    const uploadUrl = await generateRoundDrawingUploadUrl({
+      code: joinedView.room.code,
+    })
+    const uploadResult = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'image/png' },
+      body: image.blob,
+    })
+    if (!uploadResult.ok) {
+      throw new Error('Failed to upload round drawing snapshot')
+    }
+    const payload = (await uploadResult.json()) as { storageId: Id<'_storage'> }
+    return payload.storageId
+  }
+
+  async function resolveRoundWithSnapshot(reason: 'GUESSED' | 'TIMEOUT') {
+    if (!joinedView) {
+      return
+    }
+    const snapshotStorageId = await uploadRoundSnapshotIfNeeded().catch(() => undefined)
+    if (reason === 'GUESSED') {
+      await markRoundGuessed({
+        code: joinedView.room.code,
+        snapshotStorageId,
+      })
+      return
+    }
+    await timeoutRound({
+      code: joinedView.room.code,
+      snapshotStorageId,
+    })
   }
 
   async function handleJoinNotJoined() {
@@ -436,6 +514,65 @@ function RoomPage() {
     openLeaveConfirm(intent)
   }
 
+  async function copyTextToClipboard(value: string) {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value)
+      return
+    }
+    if (typeof document === 'undefined') {
+      throw new Error('Clipboard is unavailable')
+    }
+    const textarea = document.createElement('textarea')
+    textarea.value = value
+    textarea.setAttribute('readonly', 'true')
+    textarea.style.position = 'absolute'
+    textarea.style.left = '-9999px'
+    document.body.appendChild(textarea)
+    textarea.select()
+    const copied = document.execCommand('copy')
+    document.body.removeChild(textarea)
+    if (!copied) {
+      throw new Error('Copy failed')
+    }
+  }
+
+  async function handleShareGame() {
+    if (!joinedView) {
+      return
+    }
+    const code = joinedView.room.code
+    const url =
+      typeof window !== 'undefined'
+        ? `${window.location.origin}/room/${code}`
+        : `/room/${code}`
+    setError(null)
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+        await navigator.share({
+          title: `Game ${code}`,
+          text: `Join my game using code ${code}`,
+          url,
+        })
+        setShareStatus('Shared')
+      } else {
+        await copyTextToClipboard(url)
+        setShareStatus('Link copied')
+      }
+      window.setTimeout(() => setShareStatus(null), 1800)
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === 'AbortError') {
+        return
+      }
+      try {
+        await copyTextToClipboard(url)
+        setShareStatus('Link copied')
+        window.setTimeout(() => setShareStatus(null), 1800)
+      } catch {
+        setError('Could not share this game right now. Please copy the URL manually.')
+      }
+    }
+  }
+
   async function handleConfirmedLeave() {
     if (!leaveIntent || !joinedRoomCode) {
       return
@@ -528,6 +665,8 @@ function RoomPage() {
     )
     return assignedOnlinePlayers.length >= 2
   }, [joinedView, isAdmin])
+  const supportsNativeShare =
+    typeof navigator !== 'undefined' && typeof navigator.share === 'function'
 
   if (!isSignedIn) {
     return (
@@ -694,10 +833,43 @@ function RoomPage() {
     <main className="page-wrap px-4 pb-16 pt-10">
       <section className="island-shell rounded-3xl p-4 sm:p-6">
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="display-title m-0 text-3xl sm:text-4xl">Game {view.room.code}</h1>
-          <span className="rounded-full border-[3px] border-[var(--line)] bg-white px-3 py-1 text-xs font-extrabold">
-            {gameStateLabel(view.room.state)}
-          </span>
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+            <h1 className="display-title m-0 translate-y-[2px] text-3xl leading-none sm:text-4xl">
+              Game {view.room.code}
+            </h1>
+            <button
+              type="button"
+              className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-xl border-[3px] border-[var(--line)] bg-white px-3 text-sm font-extrabold leading-none text-[var(--line)]"
+              onClick={() => {
+                void handleShareGame()
+              }}
+              title={supportsNativeShare ? 'Share game' : 'Copy game link'}
+              aria-label={supportsNativeShare ? 'Share game' : 'Copy game link'}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="h-4 w-4"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="9" y="9" width="11" height="11" rx="2" />
+                <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" />
+              </svg>
+              <span>{supportsNativeShare ? 'Share' : 'Copy'}</span>
+            </button>
+            {view.room.state !== 'LOBBY' ? (
+              <span className="rounded-full border-[3px] border-[var(--line)] bg-white px-3 py-1 text-xs font-extrabold">
+                {gameStateLabel(view.room.state)}
+              </span>
+            ) : null}
+            {shareStatus ? (
+              <span className="text-xs font-extrabold text-[var(--sea-ink-soft)]">{shareStatus}</span>
+            ) : null}
+          </div>
           <div className="ml-auto flex items-center gap-2">
             <UserButton />
             <button
@@ -831,6 +1003,24 @@ function RoomPage() {
                   <option value="hard">Hard</option>
                 </select>
               </label>
+
+              <label className="text-sm font-semibold sm:col-span-2">
+                Drawing mode
+                <select
+                  value={configDraft.drawingMode}
+                  disabled={!canEditConfig}
+                  onChange={(event) =>
+                    setConfigDraft((current) => ({
+                      ...current,
+                      drawingMode: event.target.value as DrawingMode,
+                    }))
+                  }
+                  className="mt-1 w-full px-3 py-2"
+                >
+                  <option value="physical">Physical Whiteboard</option>
+                  <option value="online">Online Whiteboard (Beta)</option>
+                </select>
+              </label>
             </div>
 
             <div className="mt-4">
@@ -876,6 +1066,7 @@ function RoomPage() {
                               ? [...CATEGORIES]
                               : configDraft.selectedCategories,
                           difficultyMode: configDraft.difficultyMode,
+                          drawingMode: configDraft.drawingMode,
                         },
                       })
                     })
@@ -1125,6 +1316,12 @@ function RoomPage() {
             <p className="mt-1 text-sm text-[var(--sea-ink-soft)]">
               Team: {view.currentRound?.teamName ?? 'N/A'}
             </p>
+            <p className="mt-1 text-sm font-semibold text-[var(--sea-ink-soft)]">
+              Mode:{' '}
+              {view.room.config.drawingMode === 'online'
+                ? 'Online Whiteboard'
+                : 'Physical Whiteboard'}
+            </p>
 
             <div className="mt-4 rounded-2xl border-[3px] border-[var(--line)] bg-white/70 p-4 text-center">
               <p className="island-kicker mb-1">Timer</p>
@@ -1148,6 +1345,14 @@ function RoomPage() {
               </p>
             </div>
 
+            {view.room.config.drawingMode === 'online' && view.currentRound?.drawingRoomId ? (
+              <OnlineWhiteboard
+                syncRoomId={view.currentRound.drawingRoomId}
+                canDraw={view.currentRound.playerId === view.me.id}
+                onEditorMount={handleWhiteboardEditorMount}
+              />
+            ) : null}
+
             {isAdmin ? (
               <button
                 type="button"
@@ -1155,7 +1360,7 @@ function RoomPage() {
                 className="mt-4 bg-[var(--mint)] px-4 py-2 text-sm font-extrabold disabled:opacity-60"
                 onClick={() => {
                   void runAction('guessed', async () => {
-                    await markRoundGuessed({ code: view.room.code })
+                    await resolveRoundWithSnapshot('GUESSED')
                   })
                 }}
               >
@@ -1272,13 +1477,35 @@ function RoomPage() {
                     <p className="m-0 text-xs text-[var(--sea-ink-soft)]">
                       {entry.teamName} • {entry.playerName} • {titleCase(entry.category)}
                     </p>
-                    <p
-                      className={`mt-1 mb-0 inline-flex rounded-full border-[3px] border-[var(--line)] px-2 py-0.5 text-xs font-extrabold ${
-                        entry.guessed ? 'bg-[var(--mint)]' : 'bg-[var(--pink)]'
-                      }`}
-                    >
-                      {entry.guessed ? 'Guessed' : 'Timeout'}
-                    </p>
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <p
+                        className={`m-0 inline-flex rounded-full border-[3px] border-[var(--line)] px-2 py-0.5 text-xs font-extrabold ${
+                          entry.guessed ? 'bg-[var(--mint)]' : 'bg-[var(--pink)]'
+                        }`}
+                      >
+                        {entry.guessed ? 'Guessed' : 'Timeout'}
+                      </p>
+                      {entry.guessed && entry.drawingSnapshotUrl ? (
+                        <button
+                          type="button"
+                          className="ml-auto whitespace-nowrap bg-[var(--orange)] px-2 py-1 text-xs font-extrabold"
+                          onClick={() => {
+                            const snapshotUrl = entry.drawingSnapshotUrl
+                            if (!snapshotUrl) {
+                              return
+                            }
+                            setHistoryDrawingPreview({
+                              word: entry.word,
+                              playerName: entry.playerName,
+                              teamName: entry.teamName,
+                              url: snapshotUrl,
+                            })
+                          }}
+                        >
+                          View Drawing
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                 ))
               )}
@@ -1286,6 +1513,37 @@ function RoomPage() {
           </article>
         </section>
       )}
+
+      {historyDrawingPreview ? (
+        <section className="fixed inset-0 z-50 flex items-end justify-center bg-[rgba(22,17,61,0.58)] p-4 sm:items-center">
+          <article className="island-shell w-full max-w-2xl rounded-3xl p-4 sm:p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="island-kicker mb-1">Round Drawing</p>
+                <h3 className="m-0 text-2xl font-extrabold">{historyDrawingPreview.word}</h3>
+                <p className="mt-1 text-xs font-semibold text-[var(--sea-ink-soft)]">
+                  {historyDrawingPreview.teamName} • {historyDrawingPreview.playerName}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="bg-white px-3 py-1.5 text-xs font-extrabold"
+                onClick={() => setHistoryDrawingPreview(null)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-3 overflow-hidden rounded-2xl border-[3px] border-[var(--line)] bg-white">
+              <img
+                src={historyDrawingPreview.url}
+                alt={`Round drawing for ${historyDrawingPreview.word}`}
+                className="block h-auto max-h-[70vh] w-full object-contain"
+              />
+            </div>
+          </article>
+        </section>
+      ) : null}
 
       {leaveIntent && !isRoomFinished ? (
         <section className="fixed inset-0 z-50 flex items-end justify-center bg-[rgba(22,17,61,0.58)] p-4 sm:items-center">

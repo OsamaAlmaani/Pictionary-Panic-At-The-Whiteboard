@@ -1,8 +1,8 @@
 # Panic At The Whiteboard
 Bad Art Great Vibes.
 
-This is a real-time team Pictionary room manager for a physical whiteboard game.
-No drawing tools in the app. The chaos happens on the board in real life.
+This is a real-time team Pictionary game manager.
+You can play either with a physical whiteboard or with the built-in online whiteboard mode.
 
 ## What The Game Is
 
@@ -61,4 +61,29 @@ At the end, everyone gets a full scoreboard and word history.
 - No repeated words in a session.
 - Less confusion, more laughing.
 
-Basically: the app runs the room, your whiteboard runs the show.
+Basically: the app runs the room, your game night runs the show.
+
+## Developer Note: Online Whiteboard (Beta)
+
+This project includes an optional **online whiteboard mode** using:
+
+- `@tldraw/sync`
+- `useSyncDemo` (quick start from tldraw docs)
+
+### Important limitation (MVP phase)
+
+During this phase, drawing sync uses the tldraw demo backend. That means:
+
+- Room data is temporary (about 24 hours).
+- Demo rooms are not for private/production-grade data handling.
+- This is acceptable for short-lived game sessions only.
+
+If this limitation is okay for your use case, great.
+If you need stronger privacy/control, move to a self-hosted tldraw sync server.
+
+### Planned production path
+
+- Keep Convex as the game engine (rooms, turns, words, scoring).
+- Replace `useSyncDemo` with `useSync` against our own hosted sync backend.
+- Enforce access control with Clerk-authenticated room membership.
+- Keep a strict retention policy (for example 24h or less) under our own control.

@@ -26,6 +26,7 @@ const GAME_STATES = [
 ] as const
 const WORD_MODES = ['single', 'multiple', 'random_all'] as const
 const DIFFICULTY_MODES = ['mixed', 'easy', 'medium', 'difficult', 'hard'] as const
+const DRAWING_MODES = ['physical', 'online'] as const
 const PLAYER_PRESENCE_TIMEOUT_MS = 25_000
 const NEXT_ROOM_START_WINDOW_MS = 10 * 60 * 1000
 const DEFAULT_GAME_HISTORY_LIMIT = 12
@@ -57,6 +58,7 @@ const roomConfigValidator = v.object({
     v.literal('difficult'),
     v.literal('hard'),
   ),
+  drawingMode: v.union(v.literal('physical'), v.literal('online')),
 })
 
 function normalizeCode(code: string) {
@@ -70,6 +72,18 @@ function defaultConfig(): RoomConfig {
     wordMode: 'random_all',
     selectedCategories: [...WORD_CATEGORIES],
     difficultyMode: 'mixed',
+    drawingMode: 'physical',
+  }
+}
+
+function normalizeRoomConfig(config: Doc<'rooms'>['config']): RoomConfig {
+  return {
+    wordsPerTeamLimit: config.wordsPerTeamLimit,
+    timePerWordSeconds: config.timePerWordSeconds,
+    wordMode: config.wordMode,
+    selectedCategories: config.selectedCategories,
+    difficultyMode: config.difficultyMode,
+    drawingMode: config.drawingMode ?? 'physical',
   }
 }
 
@@ -275,10 +289,12 @@ async function endActiveRound({
   ctx,
   room,
   reason,
+  snapshotStorageId,
 }: {
   ctx: MutationCtx
   room: Doc<'rooms'>
   reason: 'GUESSED' | 'TIMEOUT'
+  snapshotStorageId?: Id<'_storage'>
 }) {
   if (!room.activeRoundId) {
     throw new Error('No active round')
@@ -301,6 +317,7 @@ async function endActiveRound({
   if (!player || !team) {
     throw new Error('Round references missing player/team')
   }
+  const roomConfig = normalizeRoomConfig(room.config)
 
   const pointsAwarded = reason === 'GUESSED' ? 1 : 0
 
@@ -310,6 +327,7 @@ async function endActiveRound({
     endedAtMs: now,
     endedReason: reason,
     pointsAwarded,
+    drawingSnapshotStorageId: snapshotStorageId,
   })
 
   if (pointsAwarded > 0) {
@@ -345,7 +363,7 @@ async function endActiveRound({
   const allTeamsReachedLimit =
     teamsInPlay.length > 0 &&
     teamsInPlay.every(
-      (item: Doc<'teams'>) => item.roundsPlayed >= room.config.wordsPerTeamLimit,
+      (item: Doc<'teams'>) => item.roundsPlayed >= roomConfig.wordsPerTeamLimit,
     )
   const wordPoolExhausted = room.wordCursor >= room.wordDeck.length
 
@@ -747,6 +765,9 @@ export const configureRoom = mutation({
     if (!DIFFICULTY_MODES.includes(args.config.difficultyMode)) {
       throw new Error('Invalid difficulty mode')
     }
+    if (!DRAWING_MODES.includes(args.config.drawingMode)) {
+      throw new Error('Invalid drawing mode')
+    }
 
     const selectedCategories =
       args.config.wordMode === 'random_all'
@@ -759,6 +780,7 @@ export const configureRoom = mutation({
       wordMode: args.config.wordMode,
       selectedCategories: selectedCategories as WordCategory[],
       difficultyMode: args.config.difficultyMode,
+      drawingMode: args.config.drawingMode,
     }
 
     const wordDeck = buildWordDeck(config, room.wordSeed)
@@ -951,6 +973,7 @@ export const startRound = mutation({
       await finishRoom({ ctx, room, atMs: Date.now() })
       return { finished: true, reason: 'WORD_POOL_EXHAUSTED' as const }
     }
+    const roomConfig = normalizeRoomConfig(room.config)
 
     const { playersById, teamsById } = await loadRoomContext(ctx, room._id)
     const now = Date.now()
@@ -958,7 +981,7 @@ export const startRound = mutation({
     const nextTurn = findNextEligibleTurn({
       turnOrder: room.turnOrder,
       startCursor: room.turnCursor,
-      wordsPerTeamLimit: room.config.wordsPerTeamLimit,
+      wordsPerTeamLimit: roomConfig.wordsPerTeamLimit,
       playersById,
       teamsById,
       minimumLastSeenAtMs,
@@ -968,7 +991,7 @@ export const startRound = mutation({
       const nextWithoutPresence = findNextEligibleTurn({
         turnOrder: room.turnOrder,
         startCursor: room.turnCursor,
-        wordsPerTeamLimit: room.config.wordsPerTeamLimit,
+        wordsPerTeamLimit: roomConfig.wordsPerTeamLimit,
         playersById,
         teamsById,
       })
@@ -990,7 +1013,12 @@ export const startRound = mutation({
       return { finished: true, reason: 'WORD_POOL_EXHAUSTED' as const }
     }
 
-    const endsAtMs = now + room.config.timePerWordSeconds * 1000
+    const endsAtMs = now + roomConfig.timePerWordSeconds * 1000
+
+    const drawingRoomId =
+      roomConfig.drawingMode === 'online'
+        ? `panic-whiteboard-${room.code}-${room.roundNumber + 1}-${room.wordSeed.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+        : undefined
 
     const roundId = await ctx.db.insert('rounds', {
       roomId: room._id,
@@ -1007,6 +1035,8 @@ export const startRound = mutation({
       endedAtMs: undefined,
       endedReason: undefined,
       pointsAwarded: 0,
+      drawingRoomId,
+      drawingSnapshotStorageId: undefined,
     })
 
     await ctx.db.insert('usedWords', {
@@ -1041,6 +1071,7 @@ export const startRound = mutation({
 export const markRoundGuessed = mutation({
   args: {
     code: v.string(),
+    snapshotStorageId: v.optional(v.id('_storage')),
   },
   handler: async (ctx, args) => {
     const identity = await requireIdentity(ctx)
@@ -1060,7 +1091,12 @@ export const markRoundGuessed = mutation({
     }
     assertAdmin(me)
 
-    await endActiveRound({ ctx, room, reason: 'GUESSED' })
+    await endActiveRound({
+      ctx,
+      room,
+      reason: 'GUESSED',
+      snapshotStorageId: args.snapshotStorageId,
+    })
     return { success: true }
   },
 })
@@ -1068,6 +1104,7 @@ export const markRoundGuessed = mutation({
 export const timeoutRound = mutation({
   args: {
     code: v.string(),
+    snapshotStorageId: v.optional(v.id('_storage')),
   },
   handler: async (ctx, args) => {
     const identity = await requireIdentity(ctx)
@@ -1086,8 +1123,42 @@ export const timeoutRound = mutation({
       throw new Error('Join the room first')
     }
 
-    await endActiveRound({ ctx, room, reason: 'TIMEOUT' })
+    await endActiveRound({
+      ctx,
+      room,
+      reason: 'TIMEOUT',
+      snapshotStorageId: args.snapshotStorageId,
+    })
     return { success: true }
+  },
+})
+
+export const generateRoundDrawingUploadUrl = mutation({
+  args: {
+    code: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await requireIdentity(ctx)
+    const room = await getRoomByCode(ctx, args.code)
+    if (!room) {
+      throw new Error('Room not found')
+    }
+    assertState(room, ['IN_PROGRESS'])
+    const roomConfig = normalizeRoomConfig(room.config)
+    if (roomConfig.drawingMode !== 'online') {
+      throw new Error('Online whiteboard mode is not enabled for this game')
+    }
+
+    const me = await getRoomPlayerByToken({
+      ctx,
+      roomId: room._id,
+      tokenIdentifier: identity.tokenIdentifier,
+    })
+    if (!me) {
+      throw new Error('Join the room first')
+    }
+
+    return await ctx.storage.generateUploadUrl()
   },
 })
 
@@ -1373,10 +1444,11 @@ export const startNextRoomSession = mutation({
       }
     }
 
+    const roomConfig = normalizeRoomConfig(room.config)
     const { players, teams } = await loadRoomContext(ctx, room._id)
     const nextRoomCode = await generateUniqueRoomCode(ctx)
     const wordSeed = generateWordSeed(nextRoomCode, now)
-    const wordDeck = buildWordDeck(room.config, wordSeed)
+    const wordDeck = buildWordDeck(roomConfig, wordSeed)
     if (wordDeck.length < 1) {
       throw new Error('Word pool is empty. Configure the room first')
     }
@@ -1389,7 +1461,7 @@ export const startNextRoomSession = mutation({
       createdAtMs: now,
       startedAtMs: undefined,
       finishedAtMs: undefined,
-      config: room.config,
+      config: roomConfig,
       wordSeed,
       wordDeck,
       wordCursor: 0,
@@ -1576,6 +1648,7 @@ export const getRoomView = query({
         nextRoomCode: room.nextRoomCode ?? null,
       }
     }
+    const roomConfig = normalizeRoomConfig(room.config)
 
     const [players, teams, rounds] = await Promise.all([
       ctx.db
@@ -1605,7 +1678,7 @@ export const getRoomView = query({
     const nextTurn = findNextEligibleTurn({
       turnOrder: room.turnOrder,
       startCursor: room.turnCursor,
-      wordsPerTeamLimit: room.config.wordsPerTeamLimit,
+      wordsPerTeamLimit: roomConfig.wordsPerTeamLimit,
       playersById,
       teamsById,
       minimumLastSeenAtMs: now - PLAYER_PRESENCE_TIMEOUT_MS,
@@ -1668,26 +1741,32 @@ export const getRoomView = query({
         lastSeenAtMs: player.lastSeenAtMs ?? player.joinedAtMs,
       }))
 
-    const history = [...rounds]
-      .filter((round) => round.status === 'COMPLETED')
-      .sort((a, b) => a.roundNumber - b.roundNumber)
-      .map((round) => {
-        const roundPlayer = playersById.get(round.playerId)
-        const roundTeam = teamsById.get(round.teamId)
-        return {
-          id: round._id,
-          roundNumber: round.roundNumber,
-          word: round.word,
-          category: round.category,
-          guessed: round.guessed,
-          pointsAwarded: round.pointsAwarded,
-          playerName: roundPlayer?.displayName ?? 'Unknown',
-          teamName: roundTeam?.name ?? 'Unknown',
-          endedReason: round.endedReason ?? null,
-          startedAtMs: round.startedAtMs,
-          endedAtMs: round.endedAtMs ?? null,
-        }
-      })
+    const history = await Promise.all(
+      [...rounds]
+        .filter((round) => round.status === 'COMPLETED')
+        .sort((a, b) => a.roundNumber - b.roundNumber)
+        .map(async (round) => {
+          const roundPlayer = playersById.get(round.playerId)
+          const roundTeam = teamsById.get(round.teamId)
+          const drawingSnapshotUrl = round.drawingSnapshotStorageId
+            ? await ctx.storage.getUrl(round.drawingSnapshotStorageId)
+            : null
+          return {
+            id: round._id,
+            roundNumber: round.roundNumber,
+            word: round.word,
+            category: round.category,
+            guessed: round.guessed,
+            pointsAwarded: round.pointsAwarded,
+            playerName: roundPlayer?.displayName ?? 'Unknown',
+            teamName: roundTeam?.name ?? 'Unknown',
+            endedReason: round.endedReason ?? null,
+            startedAtMs: round.startedAtMs,
+            endedAtMs: round.endedAtMs ?? null,
+            drawingSnapshotUrl,
+          }
+        }),
+    )
 
     const currentRound =
       activeRound && activeRound.status === 'ACTIVE'
@@ -1702,6 +1781,7 @@ export const getRoomView = query({
             teamId: activeRound.teamId,
             playerName: playersById.get(activeRound.playerId)?.displayName ?? 'Unknown',
             teamName: teamsById.get(activeRound.teamId)?.name ?? 'Unknown',
+            drawingRoomId: activeRound.drawingRoomId ?? null,
           }
         : null
 
@@ -1719,7 +1799,7 @@ export const getRoomView = query({
         usedWordsCount: room.wordCursor,
         remainingWordsCount: Math.max(0, room.wordDeck.length - room.wordCursor),
         nextRoomCode: room.nextRoomCode ?? null,
-        config: room.config,
+        config: roomConfig,
         lastEvent: room.lastEvent ?? null,
       },
       me: {

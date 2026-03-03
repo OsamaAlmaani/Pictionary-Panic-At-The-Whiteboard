@@ -24,6 +24,8 @@ const difficultyMode = v.union(
   v.literal('hard'),
 )
 
+const drawingMode = v.union(v.literal('physical'), v.literal('online'))
+
 const wordCategory = v.union(
   v.literal('easy'),
   v.literal('medium'),
@@ -69,6 +71,7 @@ export default defineSchema({
       wordMode,
       selectedCategories: v.array(wordCategory),
       difficultyMode,
+      drawingMode: v.optional(drawingMode),
     }),
     wordSeed: v.string(),
     wordDeck: v.array(
@@ -143,6 +146,8 @@ export default defineSchema({
     endedAtMs: v.optional(v.number()),
     endedReason: v.optional(v.union(v.literal('GUESSED'), v.literal('TIMEOUT'))),
     pointsAwarded: v.number(),
+    drawingRoomId: v.optional(v.string()),
+    drawingSnapshotStorageId: v.optional(v.id('_storage')),
   })
     .index('by_room', ['roomId'])
     .index('by_room_round_number', ['roomId', 'roundNumber']),
