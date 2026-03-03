@@ -2,6 +2,11 @@
   "name": "pictionary",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.29.3",
+  "engines": {
+    "node": "22.x",
+    "pnpm": "10.x"
+  },
   "imports": {
     "#/*": "./src/*"
   },
@@ -47,8 +52,5 @@
     "vite": "^7.1.7",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^3.0.5"
-  },
-  "engines": {
-    "pnpm": "10.29.3" 
   }
 }
