@@ -21,12 +21,14 @@ export const DIFFICULTY_CATEGORIES = [
 export type WordCategory = (typeof WORD_CATEGORIES)[number]
 export type DifficultyMode = 'mixed' | (typeof DIFFICULTY_CATEGORIES)[number]
 export type WordMode = 'single' | 'multiple' | 'random_all'
+export type DrawingMode = 'physical' | 'online'
 export type GameState =
   | 'LOBBY'
   | 'CONFIGURED'
   | 'IN_PROGRESS'
   | 'BETWEEN_ROUNDS'
   | 'FINISHED'
+  | 'CANCELED'
 
 export type WordDeckEntry = {
   key: string
@@ -40,6 +42,7 @@ export type RoomConfig = {
   wordMode: WordMode
   selectedCategories: WordCategory[]
   difficultyMode: DifficultyMode
+  drawingMode: DrawingMode
 }
 
 const WORDS = pictionaryWords as Record<WordCategory, string[]>

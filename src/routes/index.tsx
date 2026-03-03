@@ -72,13 +72,24 @@ function errorMessage(error: unknown) {
 	const cleaned = raw
 		.replace(/\[CONVEX[^\]]*\]\s*/g, "")
 		.replace(/\[Request ID:[^\]]*\]\s*/g, "")
-		.replace(/Server Error\s*/g, "");
+		.replace(/Server Error\s*/g, "")
+		.replace(/\s+at handler\s*\([^)]*\)\s*Called by client/gi, "")
+		.replace(/\s+Called by client/gi, "")
+		.trim();
 	const marker = "Uncaught Error:";
 	const index = cleaned.indexOf(marker);
 	if (index >= 0) {
 		return cleaned.slice(index + marker.length).trim();
 	}
 	return cleaned.trim();
+}
+
+function friendlyErrorMessage(error: unknown) {
+	const message = errorMessage(error);
+	if (/^room not found$/i.test(message) || /room not found/i.test(message)) {
+		return "That game code vanished into marker dust. Double-check it and try again.";
+	}
+	return message;
 }
 
 function HomePage() {
@@ -134,7 +145,7 @@ function HomePage() {
 		try {
 			await fn();
 		} catch (cause) {
-			setError(errorMessage(cause));
+			setError(friendlyErrorMessage(cause));
 		} finally {
 			setBusy(null);
 		}
