@@ -74,12 +74,16 @@ export default defineSchema({
       drawingMode: v.optional(drawingMode),
     }),
     wordSeed: v.string(),
-    wordDeck: v.array(
-      v.object({
-        key: v.string(),
-        word: v.string(),
-        category: wordCategory,
-      }),
+    wordDeckSize: v.number(),
+    // Legacy field retained for backward compatibility while existing rooms are compacted.
+    wordDeck: v.optional(
+      v.array(
+        v.object({
+          key: v.string(),
+          word: v.string(),
+          category: wordCategory,
+        }),
+      ),
     ),
     wordCursor: v.number(),
     turnOrder: v.array(v.id('players')),
@@ -112,6 +116,7 @@ export default defineSchema({
     .index('by_room', ['roomId'])
     .index('by_room_token', ['roomId', 'tokenIdentifier'])
     .index('by_token', ['tokenIdentifier'])
+    .index('by_token_joined', ['tokenIdentifier', 'joinedAtMs'])
     .index('by_room_team', ['roomId', 'teamId']),
   userProfiles: defineTable({
     tokenIdentifier: v.string(),

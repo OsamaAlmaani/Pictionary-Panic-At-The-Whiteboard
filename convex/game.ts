@@ -27,7 +27,8 @@ const GAME_STATES = [
 const WORD_MODES = ['single', 'multiple', 'random_all'] as const
 const DIFFICULTY_MODES = ['mixed', 'easy', 'medium', 'difficult', 'hard'] as const
 const DRAWING_MODES = ['physical', 'online'] as const
-const PLAYER_PRESENCE_TIMEOUT_MS = 25_000
+const PLAYER_PRESENCE_TIMEOUT_MS = 75_000
+const PLAYER_PRESENCE_MIN_HEARTBEAT_WRITE_MS = 20_000
 const NEXT_ROOM_START_WINDOW_MS = 10 * 60 * 1000
 const DEFAULT_GAME_HISTORY_LIMIT = 12
 const MAX_GAME_HISTORY_LIMIT = 30
@@ -137,6 +138,20 @@ async function getRoomPlayerByToken({
       q.eq('roomId', roomId).eq('tokenIdentifier', tokenIdentifier),
     )
     .unique()
+}
+
+function getRoomWordDeckSize(room: Doc<'rooms'>, roomConfig?: RoomConfig) {
+  if (typeof room.wordDeckSize === 'number') {
+    return room.wordDeckSize
+  }
+  if (room.wordDeck) {
+    return room.wordDeck.length
+  }
+  return buildWordDeck(roomConfig ?? normalizeRoomConfig(room.config), room.wordSeed).length
+}
+
+function getRoomWordDeck(room: Doc<'rooms'>, roomConfig?: RoomConfig) {
+  return room.wordDeck ?? buildWordDeck(roomConfig ?? normalizeRoomConfig(room.config), room.wordSeed)
 }
 
 async function getUserProfileByToken({
@@ -365,7 +380,7 @@ async function endActiveRound({
     teamsInPlay.every(
       (item: Doc<'teams'>) => item.roundsPlayed >= roomConfig.wordsPerTeamLimit,
     )
-  const wordPoolExhausted = room.wordCursor >= room.wordDeck.length
+  const wordPoolExhausted = room.wordCursor >= getRoomWordDeckSize(room, roomConfig)
 
   if (allTeamsReachedLimit || wordPoolExhausted) {
     await ctx.db.patch(room._id, {
@@ -440,7 +455,7 @@ export const createRoom = mutation({
 
     const config = defaultConfig()
     const wordSeed = generateWordSeed(code, now)
-    const wordDeck = buildWordDeck(config, wordSeed)
+    const wordDeckSize = buildWordDeck(config, wordSeed).length
 
     const roomId = await ctx.db.insert('rooms', {
       code,
@@ -452,7 +467,8 @@ export const createRoom = mutation({
       finishedAtMs: undefined,
       config,
       wordSeed,
-      wordDeck,
+      wordDeckSize,
+      wordDeck: undefined,
       wordCursor: 0,
       turnOrder: [],
       turnCursor: 0,
@@ -621,20 +637,17 @@ export const getMyGameHistory = query({
 
     const playerRows = await ctx.db
       .query('players')
-      .withIndex('by_token', (q) => q.eq('tokenIdentifier', identity.tokenIdentifier))
-      .collect()
+      .withIndex('by_token_joined', (q) =>
+        q.eq('tokenIdentifier', identity.tokenIdentifier),
+      )
+      .order('desc')
+      .take(Math.max(limit * 20, 100))
     if (playerRows.length < 1) {
       return []
     }
 
     const latestPlayerByRoomId = new Map<Id<'rooms'>, Doc<'players'>>()
-    const sortedPlayers = [...playerRows].sort((a, b) => {
-      if (a.joinedAtMs !== b.joinedAtMs) {
-        return b.joinedAtMs - a.joinedAtMs
-      }
-      return b._id.localeCompare(a._id)
-    })
-    for (const player of sortedPlayers) {
+    for (const player of playerRows) {
       if (latestPlayerByRoomId.has(player.roomId)) {
         continue
       }
@@ -783,7 +796,7 @@ export const configureRoom = mutation({
       drawingMode: args.config.drawingMode,
     }
 
-    const wordDeck = buildWordDeck(config, room.wordSeed)
+    const wordDeckSize = buildWordDeck(config, room.wordSeed).length
 
     const [players, teams, rounds, usedWords] = await Promise.all([
       ctx.db
@@ -818,7 +831,8 @@ export const configureRoom = mutation({
 
     await ctx.db.patch(room._id, {
       config,
-      wordDeck,
+      wordDeckSize,
+      wordDeck: undefined,
       wordCursor: 0,
       state: 'CONFIGURED',
       turnOrder: [],
@@ -831,7 +845,7 @@ export const configureRoom = mutation({
 
     return {
       success: true,
-      totalWordsInDeck: wordDeck.length,
+      totalWordsInDeck: wordDeckSize,
     }
   },
 })
@@ -898,7 +912,7 @@ export const startGame = mutation({
     }
 
     const turnOrder = buildDeterministicTurnOrder(eligiblePlayers)
-    if (room.wordDeck.length < 1) {
+    if (getRoomWordDeckSize(room) < 1) {
       throw new Error('Word pool is empty. Configure the room first')
     }
 
@@ -969,11 +983,13 @@ export const startRound = mutation({
     }
     assertAdmin(me)
 
-    if (room.wordCursor >= room.wordDeck.length) {
+    const roomConfig = normalizeRoomConfig(room.config)
+    const wordDeck = getRoomWordDeck(room, roomConfig)
+    const wordDeckSize = getRoomWordDeckSize(room, roomConfig)
+    if (room.wordCursor >= wordDeckSize) {
       await finishRoom({ ctx, room, atMs: Date.now() })
       return { finished: true, reason: 'WORD_POOL_EXHAUSTED' as const }
     }
-    const roomConfig = normalizeRoomConfig(room.config)
 
     const { playersById, teamsById } = await loadRoomContext(ctx, room._id)
     const now = Date.now()
@@ -1007,7 +1023,7 @@ export const startRound = mutation({
       throw new Error('Selected player has no team')
     }
 
-    const wordEntry = room.wordDeck[room.wordCursor]
+    const wordEntry = wordDeck[room.wordCursor]
     if (!wordEntry) {
       await finishRoom({ ctx, room, atMs: Date.now() })
       return { finished: true, reason: 'WORD_POOL_EXHAUSTED' as const }
@@ -1266,10 +1282,35 @@ export const heartbeat = mutation({
     if (!me) {
       throw new Error('Join the room first')
     }
-    await ctx.db.patch(me._id, {
-      lastSeenAtMs: Date.now(),
-    })
-    return { success: true }
+    const now = Date.now()
+    const needsPresenceUpdate =
+      !me.lastSeenAtMs || now - me.lastSeenAtMs >= PLAYER_PRESENCE_MIN_HEARTBEAT_WRITE_MS
+    const needsRoomCompaction =
+      !!room.wordDeck &&
+      (room.wordDeckSize === undefined || room.wordDeckSize !== room.wordDeck.length)
+
+    if (!needsPresenceUpdate && !needsRoomCompaction) {
+      return { success: true, skipped: true }
+    }
+
+    const writes: Promise<unknown>[] = []
+    if (needsPresenceUpdate) {
+      writes.push(
+        ctx.db.patch(me._id, {
+          lastSeenAtMs: now,
+        }),
+      )
+    }
+    if (needsRoomCompaction && room.wordDeck) {
+      writes.push(
+        ctx.db.patch(room._id, {
+          wordDeckSize: room.wordDeck.length,
+          wordDeck: undefined,
+        }),
+      )
+    }
+    await Promise.all(writes)
+    return { success: true, skipped: false }
   },
 })
 
@@ -1448,8 +1489,8 @@ export const startNextRoomSession = mutation({
     const { players, teams } = await loadRoomContext(ctx, room._id)
     const nextRoomCode = await generateUniqueRoomCode(ctx)
     const wordSeed = generateWordSeed(nextRoomCode, now)
-    const wordDeck = buildWordDeck(roomConfig, wordSeed)
-    if (wordDeck.length < 1) {
+    const wordDeckSize = buildWordDeck(roomConfig, wordSeed).length
+    if (wordDeckSize < 1) {
       throw new Error('Word pool is empty. Configure the room first')
     }
 
@@ -1463,7 +1504,8 @@ export const startNextRoomSession = mutation({
       finishedAtMs: undefined,
       config: roomConfig,
       wordSeed,
-      wordDeck,
+      wordDeckSize,
+      wordDeck: undefined,
       wordCursor: 0,
       turnOrder: [],
       turnCursor: 0,
@@ -1705,41 +1747,16 @@ export const getRoomView = query({
         return a.position - b.position
       })
       .map((team, index) => {
-        const teamPlayers = playersSorted
-          .filter((player) => player.teamId === team._id)
-          .map((player) => ({
-            id: player._id,
-            displayName: player.displayName,
-            imageUrl: player.imageUrl ?? null,
-            score: player.score,
-            isAdmin: player.isAdmin,
-            isOnline: isPlayerOnline(player, now),
-            lastSeenAtMs: player.lastSeenAtMs ?? player.joinedAtMs,
-          }))
+        const teamPlayers = playersSorted.filter((player) => player.teamId === team._id)
         return {
           id: team._id,
           name: team.name,
-          color: team.color,
           score: team.score,
-          roundsPlayed: team.roundsPlayed,
           rank: index + 1,
           playerCount: teamPlayers.length,
-          onlinePlayerCount: teamPlayers.filter((player) => player.isOnline).length,
-          players: teamPlayers,
+          onlinePlayerCount: teamPlayers.filter((player) => isPlayerOnline(player, now)).length,
         }
       })
-
-    const unassignedPlayers = playersSorted
-      .filter((player) => !player.teamId)
-      .map((player) => ({
-        id: player._id,
-        displayName: player.displayName,
-        imageUrl: player.imageUrl ?? null,
-        score: player.score,
-        isAdmin: player.isAdmin,
-        isOnline: isPlayerOnline(player, now),
-        lastSeenAtMs: player.lastSeenAtMs ?? player.joinedAtMs,
-      }))
 
     const history = await Promise.all(
       [...rounds]
@@ -1757,16 +1774,14 @@ export const getRoomView = query({
             word: round.word,
             category: round.category,
             guessed: round.guessed,
-            pointsAwarded: round.pointsAwarded,
             playerName: roundPlayer?.displayName ?? 'Unknown',
             teamName: roundTeam?.name ?? 'Unknown',
-            endedReason: round.endedReason ?? null,
-            startedAtMs: round.startedAtMs,
-            endedAtMs: round.endedAtMs ?? null,
             drawingSnapshotUrl,
           }
         }),
     )
+
+    const wordDeckSize = getRoomWordDeckSize(room, roomConfig)
 
     const currentRound =
       activeRound && activeRound.status === 'ACTIVE'
@@ -1795,9 +1810,9 @@ export const getRoomView = query({
         startedAtMs: room.startedAtMs ?? null,
         finishedAtMs: room.finishedAtMs ?? null,
         roundNumber: room.roundNumber,
-        wordPoolSize: room.wordDeck.length,
+        wordPoolSize: wordDeckSize,
         usedWordsCount: room.wordCursor,
-        remainingWordsCount: Math.max(0, room.wordDeck.length - room.wordCursor),
+        remainingWordsCount: Math.max(0, wordDeckSize - room.wordCursor),
         nextRoomCode: room.nextRoomCode ?? null,
         config: roomConfig,
         lastEvent: room.lastEvent ?? null,
@@ -1821,16 +1836,13 @@ export const getRoomView = query({
       activePlayerId: currentRound?.playerId ?? null,
       activeTeamId: currentRound?.teamId ?? null,
       teams: rankedTeams,
-      unassignedPlayers,
       history,
       players: playersSorted.map((player) => ({
         id: player._id,
         displayName: player.displayName,
-        imageUrl: player.imageUrl ?? null,
         score: player.score,
         isAdmin: player.isAdmin,
         isOnline: isPlayerOnline(player, now),
-        lastSeenAtMs: player.lastSeenAtMs ?? player.joinedAtMs,
         teamId: player.teamId ?? null,
       })),
     }

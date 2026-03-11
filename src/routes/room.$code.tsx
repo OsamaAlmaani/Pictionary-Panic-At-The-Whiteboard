@@ -29,7 +29,7 @@ type Category = (typeof CATEGORIES)[number]
 type WordMode = 'single' | 'multiple' | 'random_all'
 type DifficultyMode = 'mixed' | 'easy' | 'medium' | 'difficult' | 'hard'
 type DrawingMode = 'physical' | 'online'
-const PLAYER_PRESENCE_HEARTBEAT_MS = 8_000
+const PLAYER_PRESENCE_HEARTBEAT_MS = 25_000
 const NEXT_GAME_START_WINDOW_MS = 10 * 60 * 1000
 
 type ConfigDraft = {
@@ -299,11 +299,23 @@ function RoomPage() {
       return
     }
     const ping = () => {
+      if (document.visibilityState !== 'visible') {
+        return
+      }
       void heartbeat({ code: joinedRoomCode }).catch(() => {})
     }
     ping()
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        ping()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
     const id = window.setInterval(ping, PLAYER_PRESENCE_HEARTBEAT_MS)
-    return () => window.clearInterval(id)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.clearInterval(id)
+    }
   }, [joinedRoomCode, heartbeat])
 
   useEffect(() => {
@@ -1438,24 +1450,34 @@ function RoomPage() {
             ) : null}
 
             <div className="mt-4 space-y-3">
-              {view.teams.map((team) => (
-                <div
-                  key={team.id}
-                  className="rounded-2xl border-[3px] border-[var(--line)] bg-white/70 p-4"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="m-0 text-lg font-extrabold">#{team.rank} {team.name}</p>
-                    <p className="m-0 text-2xl font-extrabold">{team.score}</p>
+              {view.teams.map((team) => {
+                const teamPlayers = view.players
+                  .filter((player) => player.teamId === team.id)
+                  .sort((a, b) => {
+                    if (a.score !== b.score) {
+                      return b.score - a.score
+                    }
+                    return a.displayName.localeCompare(b.displayName)
+                  })
+                return (
+                  <div
+                    key={team.id}
+                    className="rounded-2xl border-[3px] border-[var(--line)] bg-white/70 p-4"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="m-0 text-lg font-extrabold">#{team.rank} {team.name}</p>
+                      <p className="m-0 text-2xl font-extrabold">{team.score}</p>
+                    </div>
+                    <ul className="mt-2 space-y-1 pl-4">
+                      {teamPlayers.map((player) => (
+                        <li key={player.id} className="text-sm font-semibold">
+                          {player.displayName}: {player.score}
+                        </li>
+                      ))}
+                    </ul>
                   </div>
-                  <ul className="mt-2 space-y-1 pl-4">
-                    {team.players.map((player) => (
-                      <li key={player.id} className="text-sm font-semibold">
-                        {player.displayName}: {player.score}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </article>
 
